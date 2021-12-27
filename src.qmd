@@ -1,0 +1,244 @@
+---
+title: "project"
+author: "Christian Okoth"
+date: "11/25/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include = FALSE)
+
+library(tidyverse)
+library(stringr)
+library(tm)
+library(SnowballC)
+library(XML)
+
+### The Idea
+## Create an app that allows you to either
+### # select bigrams/trigrams until you have a top three presidents list
+### # enter a sentence and return which president you are similar to
+```
+
+# The First Part
+Train a model on presidential speeches
+Query said model for which words are used in which context
+
+## Cleaning
+may need to extend dataset to all official presidential speeches?
+```{r clean}
+library(quanteda)
+library(sotu)
+data("data_corpus_inaugural")
+data("sotu_meta")
+```
+
+
+```{r clean}
+inaugural = data_corpus_inaugural
+
+# inaugural = VCorpus(data_corpus_inaugural,list(reader = readRCV1))
+## convert to VCorpus...somehow - or maybe not?
+str(inaugural)
+
+## text stripping
+inauguralq = inaugural %>% 
+  tokens(remove_punct = TRUE, remove_symbols = TRUE,
+         remove_separators = TRUE, split_hyphens = TRUE)
+ibigram = tokens_ngrams(inauguralq, 2L)
+itrigram = tokens_ngrams(inauguralq, 3L)
+```
+
+
+```{r clean}
+##### Second try
+
+sotu_t = sotu_meta %>% 
+  mutate(last_name = str_extract(sotu_meta$president,"\\w+$"),
+         last_name = str_replace(last_name,"Buren","VanBuren"), ## format id column
+         doc_id = str_c(year, "-", last_name)) 
+doc_id = sotu_t$doc_id
+text = sotu_text
+
+BigramTokenizer <-
+  function(x)
+    unlist(lapply(ngrams(words(x), 2), paste, collapse = " "), use.names = FALSE)
+
+  tdm <- TermDocumentMatrix(crude, control = list(tokenize = BigramTokenizer))
+  inspect(removeSparseTerms(tdm[, 1:10], 0.7))
+
+sotut = data.frame(doc_id,text, stringsAsFactors = FALSE) %>% 
+# sotut = sotut %>% ## could probably comment out this line
+  mutate(text = tolower(gsub("[[:punct:]]", "", text)),
+         text = removeWords(text, stopwords("english")))
+
+sotuV = VCorpus(DataframeSource(sotut),list(reader = readDataframe))
+
+
+### cast term document  matrix
+```
+ from [this package](https://cran.r-project.org/web/packages/tidytext/vignettes/tidying_casting.html)
+
+### Term-Document Matrix 
+We can perform an analysis: do a model of some kind, put the documents into a corpus then use the SOTU speeches to predict with presidents wrote their respective inaugural speeches
+```{r sdata.idata}
+### remove punctuation, cases, \n\t, stopwords
+inauguraldfm = dfm(inauguralq) %>% 
+  dfm_trim(sparsity = .95) %>%
+  dfm_tfidf() 
+idtm = as.matrix(inauguraldfm)
+
+
+# table(as.data.frame(inauguraldfm@x,.95))
+
+sotudtm = DocumentTermMatrix(sotuV, control = list(weighting = function(x) weightTfIdf(x,normalize = TRUE),
+                                                   stopwords = TRUE, removePunctuation = TRUE, 
+                                                   removeNumbers = TRUE)) %>% 
+  removeSparseTerms(0.95)
+# table(as.data.frame(sotudtm$i))
+
+## strip the x off rownames
+sdtm = as.matrix(sotudtm)
+sdata = data.frame(sdtm)
+idata = data.frame(idtm) ## need to retrieve labels for last names from corpus object
+
+idata = idata[-59:-58,]
+
+
+true.labels = list(inaugural = str_extract(row.names(idata), "\\w+$"),
+         sotu = sotu_t$last_name)
+```
+
+#### Fullset Graphs
+```{r sdata.idata}
+as.data.frame(idata) %>% 
+  mutate(president = true.labels$inaugural) %>% 
+  pivot_longer(!president,names_to = "word", values_to = "score") %>%
+  group_by(president) %>% 
+  # filter(president != "Polk") %>% 
+  slice_max(score) %>% 
+  ggplot(aes(word,score,fill = president)) +
+  geom_col() +
+  coord_flip() +
+  geom_text(aes(label = president)) +
+  theme(legend.position = "none") +
+  labs(x = "", y = "tf-idf Score")
+
+as.data.frame(idata) %>% 
+  mutate(president = true.labels$inaugural) %>% 
+  pivot_longer(!president,names_to = "word", values_to = "score") %>%
+  # group_by(president) %>% 
+  # filter(president != "Polk") %>% 
+  slice_max(score,n = 20) %>% 
+  ggplot(aes(word,score,fill = president)) +
+  geom_col() +
+  coord_flip() +
+  geom_text(aes(label = president)) +
+  theme(legend.position = "none") +
+  labs(x = "", y = "tf-idf Score")
+
+```
+
+### Lincoln vs. Jackson Analysis
+```{r inauguration}
+as.data.frame(idata) %>% 
+  mutate(president = true.labels$inaugural) %>% 
+  pivot_longer(!president,names_to = "word", values_to = "score") %>%
+  group_by(president) %>% 
+  filter(president %in% c("Lincoln","Jackson"),
+         word != "cases") %>% 
+  mutate(# word = replace(word, word == "cases", "case"),
+         word = replace(word, word == "constitutionally", "constitution")) %>%
+  slice_max(score,n = 10) %>% 
+  ggplot(aes(word,score,fill = president)) +
+  geom_col(scales = "free_y") +
+  coord_flip() +
+  facet_wrap(~president) +
+  labs(y = "", x = "", title = "Lincoln and Jackson's favorite words", subtitle = "Not much overlap here...")
+```
+
+### Truman vs. Reagan Analysis
+```{r inauguration}
+as.data.frame(idata) %>% 
+  mutate(president = true.labels$inaugural) %>% 
+  pivot_longer(!president,names_to = "word", values_to = "score") %>%
+  group_by(president) %>% 
+  filter(president %in% c("Truman","Reagan")) %>% 
+  # mutate(# word = replace(word, word == "cases", "case"),
+  #        word = replace(word, word == "constitutionally", "constitution")) %>%
+  slice_max(score,n = 10) %>% 
+  ggplot(aes(word,score,fill = president)) +
+  geom_col(scales = "free_y") +
+  coord_flip() +
+  facet_wrap(~president) +
+  labs(y = "", x = "", title = "Truman and Reagan's favorite words", subtitle = "There were no similarities between the presidents.")
+```
+
+
+```{r inauguration}
+as.data.frame(idata) %>% 
+  mutate(president = true.labels$inaugural) %>% 
+  pivot_longer(!president,names_to = "word", values_to = "score") %>%
+  group_by(president) %>% 
+  filter(president %in% c("Obama","Bush"),
+         !word %in% c("mr", "she","until")) %>% 
+  # mutate(# word = replace(word, word == "cases", "case"),
+  #        word = replace(word, word == "constitutionally", "constitution")) %>%
+  slice_max(score,n = 10) %>% 
+  ggplot(aes(word,score,fill = president)) +
+  geom_col(scales = "free_y") +
+  coord_flip() +
+  facet_wrap(~president) +
+  labs(y = "", x = "", title = "Obama and Bush's favorite words", subtitle = "Not much overlap here...")
+
+# as.data.frame(t(ljdata)) %>% 
+#   ggplot(aes(1829-Jackson,1833-Jackson)) +
+#   geom_point()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Using the inaugural as the validation set.
+```{r}
+##### NOTE: inauguraldfm is a DFM object in the Quantenda package. This is not the same kind of object as a VCorpus/DocumentTermMatrix, which is what sotudtm is
+library(class)
+
+# sdata1 = sdata %>% 
+#   select(where(function(){%in% colnames(idata)})) ## where the colnames(sdata) are in colnames(idata)
+
+## invert the rows and columns
+new_sdata = sdata %>% select(intersect(colnames(sdata),colnames(idata)))
+new_idata = idata %>% select(intersect(colnames(sdata),colnames(idata)))
+
+## inner_join on words that are in both datasets
+## slice the dataset where training is just the columns from sdata and test is just columns from idata
+## invert the rows and columns back
+
+model = knn(new_sdata,new_idata,true.labels$sotu)
+predict(model, new_idata, interval= "prediction")
+table(model,true.labels$inaugural
+      )
+
+presidents = unique(true.labels$inaugural)
+
+
+
+
+```
+
+
+## Discussion
+Corpus format
+Quanteda v tm packages
+decoument-term matricies, sparsity
